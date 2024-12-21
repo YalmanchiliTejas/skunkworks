@@ -64,7 +64,6 @@ def deformations(input_mesh, target_mesh, epochs):
         updated_vertices = ground_truth.vertices_from_jacobians(ground_truth_jacobians).squeeze()
         input_mesh_loaded = update_packed_verts(input_mesh_loaded, updated_vertices)
 
-
         target_sample = sample_points_from_meshes(target_mesh_loaded, 10000)
         input_mesh_loaded_sample = sample_points_from_meshes(input_mesh_loaded, 10000)
         chamfer_distance = chamfer_distance(target_sample, input_mesh_loaded_sample)
