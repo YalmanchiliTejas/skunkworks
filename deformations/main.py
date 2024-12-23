@@ -51,6 +51,11 @@ def deformations(input_mesh, target_mesh, epochs):
     ground_truth = SourceMesh.SourceMesh(0, "./source_mesh",{}, 1 , ttype=torch.float32, use_wks=False, random_centering=False, cpuonly=False)
     ground_truth.load()
     ground_truth.to(device)
+    #Renderer
+    renderer = setup_renderer(image_size=512, device=device)
+    target_fragments = renderer.rasterizer(target_mesh)
+    target_rendered_image = renderer.shader(target_fragments, target_mesh)
+
     fclip = FashionCLIP('fashion-clip')
 
     with torch.no_grad():
@@ -64,6 +69,8 @@ def deformations(input_mesh, target_mesh, epochs):
         updated_vertices = ground_truth.vertices_from_jacobians(ground_truth_jacobians).squeeze()
         input_mesh_loaded = update_packed_verts(input_mesh_loaded, updated_vertices)
 
+
+
         target_sample = sample_points_from_meshes(target_mesh_loaded, 10000)
         input_mesh_loaded_sample = sample_points_from_meshes(input_mesh_loaded, 10000)
         chamfer_distance = chamfer_distance(target_sample, input_mesh_loaded_sample)
@@ -75,26 +82,14 @@ def deformations(input_mesh, target_mesh, epochs):
 
         #Jacobian regularization loss:
         jacbian_regularization_loss = (((ground_truth_jacobians - torch.eye(3,3, device=device)) ** 2).mean())
-        total_loss += (chamfer_distance + mesh_edge_loss + normal_loss + laplacian_loss + jacbian_regularization_loss)
+        #Rasterization L1 Loss:
+
+        input_fragments = renderer.rasterizer(input_mesh_loaded)
+        input_rendered_image = renderer.shader(input_fragments, input_mesh_loaded)
+        l1_loss = torch.nn.functional.l1_loss(input_rendered_image, target_rendered_image, reduction='mean')
+        
+        total_loss += (chamfer_distance + mesh_edge_loss + normal_loss + laplacian_loss + jacbian_regularization_loss + l1_loss)
         optimizer.zero_grad()
         total_loss.backward()
         optimizer.step()
-
-
-
-
-
-
-    
-
-
-
-    
-
-    
-
-
-
-
-
 
