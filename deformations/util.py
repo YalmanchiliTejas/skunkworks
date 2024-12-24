@@ -1,6 +1,7 @@
 
-from utilities.helpers import get_vp_map
+
 import torch
+import glm
 from pytorch3d.renderer import (
     MeshRenderer,
     MeshRasterizer,
@@ -210,3 +211,115 @@ def compute_mv_cl(final_mesh, fe, normalized_clip_render, params_camera, train_r
     cosines = (cosines * azim_d.unsqueeze(-1) * elev_d.unsqueeze(-1)).permute(2, 0, 1).triu(1)
     consistency_loss = cosines[cosines != 0].mean()
     return consistency_loss
+def persp_proj(fov_x=45, ar=1, near=1.0, far=50.0):
+    """
+    From https://github.com/rgl-epfl/large-steps-pytorch by @bathal1 (Baptiste Nicolet)
+
+    Build a perspective projection matrix.
+    Parameters
+    ----------
+    fov_x : float
+        Horizontal field of view (in degrees).
+    ar : float
+        Aspect ratio (w/h).
+    near : float
+        Depth of the near plane relative to the camera.
+    far : float
+        Depth of the far plane relative to the camera.
+    """
+    fov_rad = np.deg2rad(fov_x)
+
+    tanhalffov = np.tan( (fov_rad / 2) )
+    max_y = tanhalffov * near
+    min_y = -max_y
+    max_x = max_y * ar
+    min_x = -max_x
+
+    z_sign = -1.0
+    proj_mat = np.array([[0, 0, 0, 0],
+                        [0, 0, 0, 0],
+                        [0, 0, 0, 0],
+                        [0, 0, 0, 0]])
+
+    proj_mat[0, 0] = 2.0 * near / (max_x - min_x)
+    proj_mat[1, 1] = 2.0 * near / (max_y - min_y)
+    proj_mat[0, 2] = (max_x + min_x) / (max_x - min_x)
+    proj_mat[1, 2] = (max_y + min_y) / (max_y - min_y)
+    proj_mat[3, 2] = z_sign
+
+    proj_mat[2, 2] = z_sign * far / (far - near)
+    proj_mat[2, 3] = -(far * near) / (far - near)
+    
+    return proj_mat
+def get_camera_params(elev_angle, azim_angle, distance, resolution, fov=60, look_at=[0, 0, 0], up=[0, -1, 0]):
+    
+    elev = np.radians( elev_angle )
+    azim = np.radians( azim_angle ) 
+    
+    # Generate random view
+    cam_z = distance * np.cos(elev) * np.sin(azim)
+    cam_y = distance * np.sin(elev)
+    cam_x = distance * np.cos(elev) * np.cos(azim)
+
+    modl = glm.mat4()
+    view  = glm.lookAt(
+        glm.vec3(cam_x, cam_y, cam_z),
+        glm.vec3(look_at[0], look_at[1], look_at[2]),
+        glm.vec3(up[0], up[1], up[2]),
+    )
+
+    a_mv = view * modl
+    a_mv = np.array(a_mv.to_list()).T
+    proj_mtx = persp_proj(fov)
+    
+    a_mvp = np.matmul(proj_mtx, a_mv).astype(np.float32)[None, ...]
+    
+    a_lightpos = np.linalg.inv(a_mv)[None, :3, 3]
+    a_campos = a_lightpos
+
+    return {
+        'mvp' : a_mvp,
+        'lightpos' : a_lightpos,
+        'campos' : a_campos,
+        'resolution' : [resolution, resolution], 
+        }
+
+
+def get_vp_map(v_pos, mtx_in, resolution):
+    """
+    Compute the viewport map using PyTorch3D without nvdiffmodeling.
+
+    Args:
+        v_pos (torch.Tensor): Vertices of the mesh (N, 3).
+        mtx_in (torch.Tensor): 4x4 transformation matrix (e.g., camera view-projection matrix).
+        resolution (int): Resolution of the output viewport.
+
+    Returns:
+        torch.Tensor: Viewport map with pixel coordinates for each vertex (N, 2).
+    """
+    device = v_pos.device
+
+    # Define the viewport transformation matrix
+    vp_mtx = torch.tensor([
+        [resolution / 2, 0., 0., (resolution - 1) / 2],
+        [0., resolution / 2, 0., (resolution - 1) / 2],
+        [0., 0., 1., 0.],
+        [0., 0., 0., 1.]
+    ], device=device)
+
+    # Step 1: Apply the transformation matrix to vertex positions
+    v_pos_homo = torch.cat([v_pos, torch.ones_like(v_pos[:, :1])], dim=-1)  # Convert to homogeneous coordinates (N, 4)
+    v_pos_clip = v_pos_homo @ mtx_in.T  # Apply transformation matrix (N, 4)
+
+    # Step 2: Perform perspective divide
+    v_pos_ndc = v_pos_clip[:, :3] / v_pos_clip[:, 3:4]  # Normalize by w-component to get normalized device coordinates (N, 3)
+
+    # Step 3: Map normalized device coordinates to viewport space
+    v_pos_vp = (vp_mtx @ v_pos_ndc.T).T[..., :2]  # Map to viewport space (N, 2)
+
+    # Step 4: Ensure coordinates are within valid range
+    v_pos_vp = v_pos_vp.int()  # Convert to integer pixel values
+    v_pos_vp = torch.flip(v_pos_vp, dims=[-1])  # Flip x and y coordinates to match image conventions
+    v_pos_vp[(v_pos_vp < 0) | (v_pos_vp >= resolution)] = resolution  # Clamp out-of-bounds values to a placeholder
+
+    return v_pos_vp.long()
