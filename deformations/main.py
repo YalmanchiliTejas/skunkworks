@@ -8,6 +8,7 @@ from utilities.video import Video
 from utilities.clip_visualencoder import CLIPVisualEncoder
 from pytorch3d.ops import sample_points_from_meshes, chamfer_distance, mesh_edge_loss, mesh_normal_consistency, mesh_laplacian_smoothing
 import tqdm
+from utilities.camera_batch import CameraBatch
 
 def update_packed_verts(mesh, new_verts):
     faces = mesh.faces_packed()
@@ -42,8 +43,21 @@ def deformations(input_mesh, target_mesh, epochs, output_path):
     consistency_vit_stride = 8
     consistency_elev_filter =  30
     consistency_azim_filter =  20
+    cams_data = CameraBatch(
+        512,
+        [2.5, 3.5],
+        [0.0,360.0],
+        [1.0, 5.0, 60.0],
+        [30.0, 90.0],
+        1,
+        1,
+        0,
+        batch_size,
+        rand_solid=True
+    )
+    
    
-
+    cams = torch.utils.data.DataLoader(cams_data, batch_size, num_workers=0, pin_memory=True)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     fe = CLIPVisualEncoder(consistency_clip_model, consistency_vit_stride, device)
     input_mesh_loaded = get_mesh(input_mesh, "./input_mesh", False, False, 'input_mesh.obj')
@@ -54,9 +68,7 @@ def deformations(input_mesh, target_mesh, epochs, output_path):
     ground_truth.load()
     ground_truth.to(device)
 
-    renderer = setup_renderer(image_size=512, device=device)
-    target_fragments = renderer.rasterizer(target_mesh)
-    target_rendered_image = renderer.shader(target_fragments, target_mesh)
+    
 
     fclip = FashionCLIP('fashion-clip')
     clip_mean = torch.tensor([0.48154660, 0.45782750, 0.40821073], device=device)
@@ -70,9 +82,20 @@ def deformations(input_mesh, target_mesh, epochs, output_path):
     optimizer = torch.optim.Adam([ground_truth_jacobians], lr=lr)
 
     video = Video(output_path)
+    
 
     training_loop = tqdm(range(epochs), leave=False)
     for t in training_loop:
+
+        camera_params = next(iter(cams))
+        
+        cameras = setup_cameras(camera_params, device=device)
+        lights = setup_lights(camera_params,device=device)
+        renderer = setup_renderer(image_size=512, cameras=cameras,device=device)
+        target_fragments = renderer.rasterizer(target_mesh)
+
+        target_rendered_image = renderer.shader(target_fragments, target_mesh)
+
         total_loss = 0
 
         updated_vertices = ground_truth.vertices_from_jacobians(ground_truth_jacobians).squeeze()

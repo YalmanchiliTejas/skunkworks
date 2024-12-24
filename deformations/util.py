@@ -7,7 +7,9 @@ from pytorch3d.renderer import (
     MeshRasterizer,
     RasterizationSettings,
     ShaderBase,
-    TexturesUV
+    TexturesUV,
+    PerspectiveCameras,
+    PointLights
 )
 from pytorch3d.structures import Meshes
 import pymeshlab
@@ -323,3 +325,77 @@ def get_vp_map(v_pos, mtx_in, resolution):
     v_pos_vp[(v_pos_vp < 0) | (v_pos_vp >= resolution)] = resolution  # Clamp out-of-bounds values to a placeholder
 
     return v_pos_vp.long()
+def setup_cameras(camera_batch_data, device):
+    """
+    Setup PyTorch3D cameras using data from CameraBatch.
+    Args:
+        camera_batch_data (dict): A batch of camera parameters from CameraBatch.
+        device (torch.device): The device to place the cameras on.
+    Returns:
+        PerspectiveCameras: PyTorch3D cameras object.
+    """
+    # Extract parameters
+    azim = camera_batch_data['azim'].to(device)  # Azimuth (radians)
+    elev = camera_batch_data['elev'].to(device)  # Elevation (radians)
+    campos = camera_batch_data['campos'].to(device)  # Camera position
+
+    # Compute rotation matrices
+    R = compute_rotation_matrix(azim, elev)
+
+    # Translation is the negative of camera position (campos)
+    T = -campos
+
+    # Create PyTorch3D cameras
+    cameras = PerspectiveCameras(
+        R=R,
+        T=T,
+        device=device
+    )
+    return cameras
+
+def compute_rotation_matrix(azim, elev):
+    """
+    Compute a camera rotation matrix from azimuth and elevation angles.
+    Args:
+        azim (torch.Tensor): Azimuth angles in radians (batch_size,).
+        elev (torch.Tensor): Elevation angles in radians (batch_size,).
+    Returns:
+        torch.Tensor: Rotation matrices (batch_size, 3, 3).
+    """
+    batch_size = azim.shape[0]
+
+    # Rotation around the Y-axis (azimuth)
+    azim_rotation = torch.stack([
+        torch.stack([torch.cos(azim), torch.zeros(batch_size), torch.sin(azim)], dim=-1),
+        torch.stack([torch.zeros(batch_size), torch.ones(batch_size), torch.zeros(batch_size)], dim=-1),
+        torch.stack([-torch.sin(azim), torch.zeros(batch_size), torch.cos(azim)], dim=-1),
+    ], dim=1)
+
+    # Rotation around the X-axis (elevation)
+    elev_rotation = torch.stack([
+        torch.stack([torch.ones(batch_size), torch.zeros(batch_size), torch.zeros(batch_size)], dim=-1),
+        torch.stack([torch.zeros(batch_size), torch.cos(elev), -torch.sin(elev)], dim=-1),
+        torch.stack([torch.zeros(batch_size), torch.sin(elev), torch.cos(elev)], dim=-1),
+    ], dim=1)
+
+    # Combine rotations
+    return torch.matmul(elev_rotation, azim_rotation)
+def setup_lights(camera_batch_data, device):
+    """
+    Setup PyTorch3D lights using data from CameraBatch.
+    Args:
+        camera_batch_data (dict): A batch of camera parameters from CameraBatch.
+        device (torch.device): The device to place the lights on.
+    Returns:
+        PointLights: Configured PyTorch3D lights object.
+    """
+    lightpos = camera_batch_data['lightpos'].to(device)  # Light positions
+    lights = PointLights(
+        location=lightpos,
+        ambient_color=((0.5, 0.5, 0.5),),  # Example ambient light color
+        diffuse_color=((0.8, 0.8, 0.8),),  # Example diffuse light color
+        specular_color=((0.3, 0.3, 0.3),),  # Example specular light color
+        device=device
+    )
+    return lights
+
