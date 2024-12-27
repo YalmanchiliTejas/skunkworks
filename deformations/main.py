@@ -91,7 +91,7 @@ def deformations(input_mesh, target_mesh, epochs, output_path):
         
         cameras = setup_cameras(camera_params, device=device)
         lights = setup_lights(camera_params,device=device)
-        renderer = setup_renderer(image_size=512, cameras=cameras,device=device)
+        renderer = setup_renderer(image_size=512, cameras=cameras,device=device, lights=lights)
         target_fragments = renderer.rasterizer(target_mesh)
 
         target_rendered_image = renderer.shader(target_fragments, target_mesh)
@@ -109,6 +109,7 @@ def deformations(input_mesh, target_mesh, epochs, output_path):
         normal_loss = mesh_normal_consistency(input_mesh_loaded)
         laplacian_loss = mesh_laplacian_smoothing(input_mesh_loaded)
         triangle_area_regularization = triangle_area_regularization(input_mesh_loaded)/100000.
+        ######REGULARIZATION LOSSES END
 
         jacobian_reg_loss = ((ground_truth_jacobians - torch.eye(3, 3, device=device)) ** 2).mean()
 
