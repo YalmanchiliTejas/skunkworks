@@ -9,6 +9,11 @@ from utilities.clip_visualencoder import CLIPVisualEncoder
 from pytorch3d.ops import sample_points_from_meshes, chamfer_distance, mesh_edge_loss, mesh_normal_consistency, mesh_laplacian_smoothing
 import tqdm
 from utilities.camera_batch import CameraBatch
+from diffusers import (
+    StableDiffusionControlNetPipeline, 
+    ControlNetModel, 
+    UniPCMultistepScheduler
+)
 
 def update_packed_verts(mesh, new_verts):
     faces = mesh.faces_packed()
@@ -175,3 +180,75 @@ def deformations(input_mesh, target_mesh, epochs, output_path):
     save_obj(str(output_path / 'mesh_final.obj'), input_mesh_loaded.verts_packed(), input_mesh_loaded.faces_packed())
 
     return
+
+
+def texture_estimation(input_mesh, output_path, image_path, depth_weight, inpainting_weight ,device):
+
+    ## SETTING UP THE CONTROLNET PIPELINE
+    depth_controlnet = ControlNetModel.from_pretrained("lllyasviel/control_v11p_sd15_depth", torch_dtype=torch.float32).to(device)
+    inpainting_controlnet = ControlNetModel.from_pretrained("lllyasviel/control_v11p_sd15_inpainting", torch_dtype=torch.float32).to(device)
+    pipeline = StableDiffusionControlNetPipeline.from_pretrained("runwayml/stable-diffusion-v1-5", controlnet=[depth_controlnet, inpainting_controlnet], torch_dtype=torch.float32).to(device)
+    #### END CONTROLNET PIPELINE SETUP
+    
+    ## SETTING UP THE RENDERER AND RENDERING BOTH FRONT AND BACK IMAGES SIMULTANEOUSLY
+    front_view_params = get_camera_params(elev_angle=0, azim_angle=0, distance=3.0, resolution=512, fov=60)
+    back_view_params = get_camera_params(elev_angle=0, azim_angle=180, distance=3.0, resolution=512, fov=60)
+    front_view = setup_cameras(front_view_params, device=device)
+    back_view = setup_cameras(back_view_params, device=device)
+    front_light = setup_lights(front_view, device=device)
+    back_light = setup_lights(back_view, device=device)
+    front_renderer = setup_renderer(image_size=512, cameras=front_view, device=device, lights=front_light)
+    back_renderer = setup_renderer(image_size=512, cameras=back_view, device=device, lights=back_light)
+
+    front_image_fragements = front_renderer.rasterize(meshes=input_mesh)
+    front_image_rendered = front_renderer.shader(front_image_fragements, input_mesh)
+    back_image_fragements = back_renderer.rasterize(meshes=input_mesh)
+    back_image_rendered = back_renderer.shader(back_image_fragements, input_mesh)
+    front_depth = front_image_fragements.zbuf.squeeze(-1)
+    front_depth = (front_depth - front_depth.min()) / (front_depth.max() - front_depth.min()) ##Normalizing it to make it simpler for prediction
+    back_depth = back_image_fragements.zbuf.squeeze(-1)
+    back_depth = (back_depth - back_depth.min()) / (back_depth.max() - back_depth.min()) ##Normalizing it to make it simpler for prediction
+
+    ## END SETUP AND RENDERING THE FRONT AND BACK IMAGES
+
+    ##TODO: USE AN IMAGE CAPTIONING MODEL TO GET THE CAPTION OF THE IMAGE
+    image_caption = None
+
+    ##END CAPTION MODEL ####
+    depth_weight = torch.nn.Parameter(torch.tensor(1.0, device=device, requires_grad=True))
+    inpainting_weight = torch.nn.Parameter(torch.tensor(1.0, device=device, requires_grad=True))
+
+    # Optimizer for the weights
+    optimizer = torch.optim.Adam([depth_weight, inpainting_weight], lr=0.0025)
+    front_texture = pipeline(
+        prompt=image_caption,
+        image=front_image_rendered,
+        controlnet_conditioning_image=front_depth,
+        num_inference_steps=50,
+        guidance_scale=7.5,
+        controlnet_conditioning_scale=[depth_weight.item(), inpainting_weight.item()]
+    ).images[0]
+
+    back_texture= pipeline(
+        prompt=image_caption,
+        image=back_image_rendered,
+        controlnet_conditioning_image=back_depth,
+        num_inference_steps=50,
+        guidance_scale=7.5,
+        controlnet_conditioning_scale=[depth_weight.item(), inpainting_weight.item()]
+    ).images[0]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
