@@ -399,7 +399,7 @@ def setup_lights(camera_batch_data, device):
     )
     return lights
 
-def project_texture_to_uv_space(generated_texture, camera):
+def project_texture_to_uv_space(generated_texture):
     """
     Projects the generated texture into the UV space of the mesh.
     
@@ -435,7 +435,7 @@ def initialize_texture_map(mesh, device, resolution=512):
     texture_map = torch.zeros((resolution, resolution, 3), device=device)  # RGB texture map
     return texture_map
 
-def update_texture_map(texture_map, generated_texture, camera):
+def update_texture_map(texture_map, generated_texture):
     """
     Updates the UV texture map with a generated texture.
     
@@ -448,7 +448,7 @@ def update_texture_map(texture_map, generated_texture, camera):
         updated_texture_map: UV texture map with the new texture applied.
     """
     # Convert generated texture (image space) into UV space
-    uv_texture = project_texture_to_uv_space(generated_texture, camera)
+    uv_texture = project_texture_to_uv_space(generated_texture)
 
     # Overlay the new texture onto the existing texture map
     updated_texture_map = texture_map.clone()
@@ -489,3 +489,84 @@ def project_binary_mask_to_uv_space(binary_mask, renderer, mesh, camera,  device
     # Convert the rendered mask to UV space
     uv_binary_mask = project_texture_to_uv_space(rendered_mask, camera)
     return (uv_binary_mask > 0).float()
+
+def generate_candidate_views(num_views, resolution=512):
+    """
+    Generates a set of uniformly distributed candidate views for 3D rendering.
+
+    Args:
+        num_views (int): Number of candidate views to generate.
+        resolution (int): Resolution of the rendered views.
+
+    Returns:
+        candidate_views (list[dict]): List of camera parameters for each candidate view.
+    """
+    candidate_views = []
+    for i in range(num_views):
+        # Uniformly sample azimuth and elevation angles
+        elev_angle = np.random.uniform(-90, 90)  # Elevation: from -90° to 90°
+        azim_angle = np.random.uniform(0, 360)   # Azimuth: from 0° to 360°
+        distance = np.random.uniform(2.5, 3.5)  # Distance: example range
+
+        # Append the camera parameters
+        candidate_views.append({
+            "elev_angle": elev_angle,
+            "azim_angle": azim_angle,
+            "distance": distance,
+            "resolution": resolution
+        })
+
+    return candidate_views
+
+def calculate_candidate_masks(binary_mask, candidate_views, input_mesh, device):
+    """
+    Calculates binary masks for each candidate view based on the current texture map.
+
+    Args:
+        binary_mask (torch.Tensor): Current binary mask of the texture (H, W).
+        candidate_views (list[dict]): List of camera parameters for candidate views.
+        input_mesh (Meshes): 3D mesh object.
+        device (torch.device): Device (CPU/GPU).
+
+    Returns:
+        candidate_masks (list[torch.Tensor]): List of binary masks for each candidate view.
+    """
+    candidate_masks = []
+    for camera_params in candidate_views:
+        # Render the view using the camera parameters
+        renderer = setup_renderer(image_size=512, cameras=None, lights=None, device=device)
+        rendered_image_fragments = renderer.rasterizer(input_mesh)
+        rendered_image = renderer.shader(rendered_image_fragments, input_mesh)
+
+        # Convert rendered image to binary mask (1 for painted regions, 0 for unpainted)
+        rendered_binary_mask = (rendered_image.sum(dim=-1) > 0).float()  # Non-zero pixels are painted
+
+        # Combine the current texture's binary mask with the rendered mask
+        view_mask = binary_mask + rendered_binary_mask
+        view_mask = torch.clamp(view_mask, 0, 1)  # Ensure binary values (0 or 1)
+
+        candidate_masks.append(view_mask)
+
+    return candidate_masks
+
+def select_least_painted_view(candidate_masks):
+    """
+    Selects the candidate view with the most unpainted pixels.
+
+    Args:
+        candidate_masks (list[torch.Tensor]): List of binary masks for each candidate view.
+
+    Returns:
+        least_painted_view_idx (int): Index of the least painted view.
+    """
+    least_painted_pixel_counts = []
+
+    for mask in candidate_masks:
+        # Count the number of unpainted pixels (0s in the mask)
+        unpainted_pixels = (mask == 0).sum().item()
+        least_painted_pixel_counts.append(unpainted_pixels)
+
+    # Find the index of the view with the maximum unpainted pixels
+    least_painted_view_idx = int(np.argmax(least_painted_pixel_counts))
+
+    return least_painted_view_idx

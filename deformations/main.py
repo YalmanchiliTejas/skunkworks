@@ -184,6 +184,7 @@ def deformations(input_mesh, target_mesh, epochs, output_path):
 
 def texture_estimation(input_mesh, output_path, image_path, depth_weight, inpainting_weight ,device):
 
+    epochs = 100
     ## SETTING UP THE CONTROLNET PIPELINE
     depth_controlnet = ControlNetModel.from_pretrained("lllyasviel/control_v11p_sd15_depth", torch_dtype=torch.float32).to(device)
     inpainting_controlnet = ControlNetModel.from_pretrained("lllyasviel/control_v11p_sd15_inpainting", torch_dtype=torch.float32).to(device)
@@ -220,23 +221,63 @@ def texture_estimation(input_mesh, output_path, image_path, depth_weight, inpain
 
     # Optimizer for the weights
     optimizer = torch.optim.Adam([depth_weight, inpainting_weight], lr=0.0025)
-    front_texture = pipeline(
-        prompt=image_caption,
-        image=front_image_rendered,
-        controlnet_conditioning_image=front_depth,
-        num_inference_steps=50,
-        guidance_scale=7.5,
-        controlnet_conditioning_scale=[depth_weight.item(), inpainting_weight.item()]
-    ).images[0]
 
-    back_texture= pipeline(
-        prompt=image_caption,
-        image=back_image_rendered,
-        controlnet_conditioning_image=back_depth,
-        num_inference_steps=50,
-        guidance_scale=7.5,
-        controlnet_conditioning_scale=[depth_weight.item(), inpainting_weight.item()]
-    ).images[0]
+    for epoch in range(epochs):
+        
+        front_texture = pipeline(
+            prompt=image_caption,
+            image=front_image_rendered,
+            controlnet_conditioning_image=front_depth,
+            num_inference_steps=50,
+            guidance_scale=7.5,
+            controlnet_conditioning_scale=[depth_weight.item(), inpainting_weight.item()]
+        ).images[0]
+
+        back_texture= pipeline(
+            prompt=image_caption,
+            image=back_image_rendered,
+            controlnet_conditioning_image=back_depth,
+            num_inference_steps=50,
+            guidance_scale=7.5,
+            controlnet_conditioning_scale=[depth_weight.item(), inpainting_weight.item()]
+        ).images[0]
+
+        texture_map = initialize_texture_map(input_mesh, device)
+        texture_map = update_texture_map(texture_map, front_texture)
+        texture_map = update_texture_map(texture_map, back_texture)
+        binary_mask = create_binary_mask(texture_map)
+
+        candidate_views = generate_candidate_views(12)
+        for view in candidate_views:
+            candidate_masks = calculate_candidate_masks(binary_mask, candidate_views, input_mesh, device)
+
+            least_painted_view = select_least_painted_view(candidate_masks)
+            selected_camera = candidate_views[least_painted_view]
+            selected_camera_params = get_camera_params(elev_angle=selected_camera['elev_angle'], azim_angle=selected_camera['azim_angle'], distance=selected_camera['distance'], resolution=512, fov=60)
+            camera = setup_cameras(selected_camera_params, device=device)
+            lights = setup_lights(camera, device=device)
+            view_renderer = setup_renderer(image_size=512, cameras=camera, device=device, lights=lights)
+            view_fragements = view_renderer.rasterize(meshes=input_mesh)
+            view_rendered = view_renderer.shader(view_fragements, input_mesh)
+            view_depth = view_fragements.zbuf.squeeze(-1)
+            view_depth = (view_depth - view_depth.min()) / (view_depth.max() - view_depth.min()) ##Normalizing it to make it simpler for prediction
+            view_texture = pipeline(
+            prompt=image_caption,
+            image=view_rendered,
+            controlnet_conditioning_image=view_depth,
+            num_inference_steps=50,
+            guidance_scale=7.5,
+            controlnet_conditioning_scale=[depth_weight.item(), inpainting_weight.item()]
+            ).images[0]
+
+            texture_map = update_texture_map(texture_map, view_texture)
+            
+
+
+
+
+    
+
 
 
 
