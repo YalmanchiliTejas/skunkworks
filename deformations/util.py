@@ -570,3 +570,57 @@ def select_least_painted_view(candidate_masks):
     least_painted_view_idx = int(np.argmax(least_painted_pixel_counts))
 
     return least_painted_view_idx
+
+def compute_inpainting_loss(texture_map, original_binary_mask, binary_mask):
+    """
+    Computes the inpainting loss by evaluating smoothness in newly inpainted regions.
+
+    Args:
+        texture_map (torch.Tensor): The UV texture map (H, W, C).
+        original_binary_mask (torch.Tensor): Binary mask before inpainting (H, W).
+        binary_mask (torch.Tensor): Updated binary mask after inpainting (H, W).
+
+    Returns:
+        inpainting_loss (torch.Tensor): The computed inpainting loss value.
+    """
+    # Identify newly inpainted regions
+    newly_inpainted = ((original_binary_mask == 0) & (binary_mask == 1)).float()
+
+    # Compute texture gradients for smoothness
+    dx = torch.abs(texture_map[:, :-1, :] - texture_map[:, 1:, :])  # Horizontal gradient
+    dy = torch.abs(texture_map[:-1, :, :] - texture_map[1:, :, :])  # Vertical gradient
+
+    # Apply the newly inpainted region mask
+    inpaint_loss_x = (dx * newly_inpainted[:-1, :, None]).mean()  # Horizontal loss
+    inpaint_loss_y = (dy * newly_inpainted[:, :-1, None]).mean()  # Vertical loss
+
+    # Combine the losses
+    inpainting_loss = inpaint_loss_x + inpaint_loss_y
+
+    return inpainting_loss
+def update_mesh_texture(mesh, texture_map):
+    """
+    Updates the PyTorch3D Meshes object with the new texture map.
+
+    Args:
+        mesh (Meshes): PyTorch3D Meshes object.
+        texture_map (torch.Tensor): The UV texture map (H, W, C).
+
+    Returns:
+        updated_mesh (Meshes): Meshes object with the new texture applied.
+    """
+    # Convert texture_map to PyTorch3D-compatible format
+    texture_map_pytorch3d = texture_map.permute(2, 0, 1).unsqueeze(0)  # (H, W, C) -> (1, C, H, W)
+
+    # Create a TexturesUV object
+    updated_textures = TexturesUV(
+        maps=texture_map_pytorch3d,
+        faces_uvs=mesh.textures.faces_uvs_padded(),
+        verts_uvs=mesh.textures.verts_uvs_padded()
+    )
+
+    # Update the mesh with the new textures
+    updated_mesh = mesh.clone()
+    updated_mesh.textures = updated_textures
+
+    return updated_mesh

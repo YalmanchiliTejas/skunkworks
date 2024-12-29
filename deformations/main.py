@@ -12,8 +12,10 @@ from utilities.camera_batch import CameraBatch
 from diffusers import (
     StableDiffusionControlNetPipeline, 
     ControlNetModel, 
-    UniPCMultistepScheduler
+    UniPCMultistepScheduler,
+    StableDiffusionPipeline,
 )
+
 
 def update_packed_verts(mesh, new_verts):
     faces = mesh.faces_packed()
@@ -36,7 +38,11 @@ def total_triangle_areas(mesh):
 def triangle_area_regularization(mesh):
     return total_triangle_areas(mesh) ** 2
 
+def sde_edit(texture, image_caption, device):
 
+    sde_edit = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5").to(device)
+
+    return sde_edit(prompt=image_caption, image=texture, strength=0.5,num_inference_steps=50, guidance_scale=7.5).images[0]
 def deformations(input_mesh, target_mesh, epochs, output_path):
     lr = 0.0025
     clip_weight = 2.5
@@ -223,7 +229,7 @@ def texture_estimation(input_mesh, output_path, image_path, depth_weight, inpain
     optimizer = torch.optim.Adam([depth_weight, inpainting_weight], lr=0.0025)
 
     for epoch in range(epochs):
-        
+        optimizer.zero_grad()
         front_texture = pipeline(
             prompt=image_caption,
             image=front_image_rendered,
@@ -246,6 +252,7 @@ def texture_estimation(input_mesh, output_path, image_path, depth_weight, inpain
         texture_map = update_texture_map(texture_map, front_texture)
         texture_map = update_texture_map(texture_map, back_texture)
         binary_mask = create_binary_mask(texture_map)
+        input_mesh = update_mesh_texture(input_mesh, texture_map)
 
         candidate_views = generate_candidate_views(12)
         for view in candidate_views:
@@ -261,6 +268,8 @@ def texture_estimation(input_mesh, output_path, image_path, depth_weight, inpain
             view_rendered = view_renderer.shader(view_fragements, input_mesh)
             view_depth = view_fragements.zbuf.squeeze(-1)
             view_depth = (view_depth - view_depth.min()) / (view_depth.max() - view_depth.min()) ##Normalizing it to make it simpler for prediction
+            original_mask = binary_mask.clone()
+
             view_texture = pipeline(
             prompt=image_caption,
             image=view_rendered,
@@ -270,8 +279,27 @@ def texture_estimation(input_mesh, output_path, image_path, depth_weight, inpain
             controlnet_conditioning_scale=[depth_weight.item(), inpainting_weight.item()]
             ).images[0]
 
-            texture_map = update_texture_map(texture_map, view_texture)
-            
+            ##SDEedit refinement stage for the texture
+            refined_texture = sde_edit(view_texture, image_caption, device) 
+            texture_map = update_texture_map(texture_map, refined_texture)
+            binary_mask = create_binary_mask(texture_map)
+            input_mesh = update_mesh_texture(input_mesh, texture_map)
+            after_appl_renderer = setup_renderer(image_size=512, cameras=camera, device=device, lights=lights)
+            after_appl_fragments = after_appl_renderer.rasterize(meshes=input_mesh)
+            after_appl_rendered = after_appl_renderer.shader(after_appl_fragments, input_mesh)
+            after_appl_depth = after_appl_fragments.zbuf.squeeze(-1)
+            after_appl_depth = (after_appl_depth - after_appl_depth.min()) / (after_appl_depth.max() - after_appl_depth.min())
+
+            inpainting_loss = compute_inpainting_loss(original_mask, binary_mask, device)
+            depth_loss = torch.nn.functional.mse_loss(after_appl_depth,view_depth)
+            total_textured_loss = inpainting_loss + depth_loss
+            print(f"The total textured loss, is: inpainting: {inpainting_loss.item()}, depth: {depth_loss.item()} and the total textured_loss: {total_textured_loss.item()}")
+            total_textured_loss.backward()
+            optimizer.step()
+        save_obj(str(output_path / 'mesh_final_texutred.obj'), input_mesh.verts_packed(), input_mesh.faces_packed())
+
+
+
 
 
 
