@@ -249,8 +249,8 @@ def texture_estimation(input_mesh, output_path, image_path, depth_weight, inpain
         ).images[0]
 
         texture_map = initialize_texture_map(input_mesh, device)
-        texture_map = update_texture_map(texture_map, front_texture)
-        texture_map = update_texture_map(texture_map, back_texture)
+        texture_map = update_texture_map(texture_map, front_texture, input_mesh.textures.verts_uvs_padded())
+        texture_map = update_texture_map(texture_map, back_texture, input_mesh.textures.verts_uvs_padded())
         binary_mask = create_binary_mask(texture_map)
         input_mesh = update_mesh_texture(input_mesh, texture_map)
 
@@ -281,7 +281,7 @@ def texture_estimation(input_mesh, output_path, image_path, depth_weight, inpain
 
             ##SDEedit refinement stage for the texture
             refined_texture = sde_edit(view_texture, image_caption, device) 
-            texture_map = update_texture_map(texture_map, refined_texture)
+            texture_map = update_texture_map(texture_map, refined_texture, input_mesh.textures.verts_uvs_padded())
             binary_mask = create_binary_mask(texture_map)
             input_mesh = update_mesh_texture(input_mesh, texture_map)
             after_appl_renderer = setup_renderer(image_size=512, cameras=camera, device=device, lights=lights)
@@ -297,27 +297,3 @@ def texture_estimation(input_mesh, output_path, image_path, depth_weight, inpain
             total_textured_loss.backward()
             optimizer.step()
         save_obj(str(output_path / 'mesh_final_texutred.obj'), input_mesh.verts_packed(), input_mesh.faces_packed())
-
-
-
-
-
-
-
-    
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -435,24 +435,35 @@ def initialize_texture_map(mesh, device, resolution=512):
     texture_map = torch.zeros((resolution, resolution, 3), device=device)  # RGB texture map
     return texture_map
 
-def update_texture_map(texture_map, generated_texture):
+def update_texture_map(texture_map, generated_texture, uv_coords):
     """
-    Updates the UV texture map with a generated texture.
-    
-    Args:
-        texture_map: Current UV texture map.
-        generated_texture: Texture generated from the ControlNet pipeline.
-        camera: Camera parameters for the current view.
-        
-    Returns:
-        updated_texture_map: UV texture map with the new texture applied.
-    """
-    # Convert generated texture (image space) into UV space
-    uv_texture = project_texture_to_uv_space(generated_texture)
+    Updates the UV texture map with a generated texture, backprojected into UV space.
 
-    # Overlay the new texture onto the existing texture map
+    Args:
+        texture_map (torch.Tensor): Current UV texture map (H, W, C).
+        generated_texture (torch.Tensor): Texture generated from the pipeline (C, H, W).
+        uv_coords (torch.Tensor): UV coordinates normalized to [-1, 1] (N, 2).
+
+    Returns:
+        updated_texture_map (torch.Tensor): UV texture map with the new texture applied.
+    """
+    generated_texture_pytorch3d = generated_texture.permute(2, 0, 1).unsqueeze(0)  # (H, W, C) -> (1, C, H, W)
+
+    # Ensure UV coordinates are normalized to [-1, 1]
+    uv_coords_normalized = 2.0 * uv_coords - 1.0  # Normalize UV coordinates to [-1, 1]
+
+    # Sample the texture map using `grid_sample`
+    sampled_texture = torch.nn.functional.grid_sample(
+        generated_texture_pytorch3d, 
+        uv_coords_normalized.unsqueeze(2), 
+        mode="bilinear",
+        align_corners=True
+    ).squeeze(0).squeeze(-1).permute(1, 0)  # Shape: (N, C)
+
+    # Modify the texture map using the sampled texture
     updated_texture_map = texture_map.clone()
-    updated_texture_map[uv_texture > 0] = uv_texture[uv_texture > 0]
+    uv_indices = (uv_coords * texture_map.size(0)).long()  # Map UVs to texture map indices
+    updated_texture_map[uv_indices[:, 1], uv_indices[:, 0]] = sampled_texture  # Update UV map
 
     return updated_texture_map
 
@@ -598,9 +609,10 @@ def compute_inpainting_loss(texture_map, original_binary_mask, binary_mask):
     inpainting_loss = inpaint_loss_x + inpaint_loss_y
 
     return inpainting_loss
+
 def update_mesh_texture(mesh, texture_map):
     """
-    Updates the PyTorch3D Meshes object with the new texture map.
+    Updates the PyTorch3D Meshes object with the new texture map using differentiable backprojection.
 
     Args:
         mesh (Meshes): PyTorch3D Meshes object.
@@ -612,14 +624,32 @@ def update_mesh_texture(mesh, texture_map):
     # Convert texture_map to PyTorch3D-compatible format
     texture_map_pytorch3d = texture_map.permute(2, 0, 1).unsqueeze(0)  # (H, W, C) -> (1, C, H, W)
 
-    # Create a TexturesUV object
+    # Ensure UV coordinates are normalized to [-1, 1] for `grid_sample`
+    uv_coords = mesh.textures.verts_uvs_padded()  # (B, N, 2)
+    uv_coords_normalized = 2.0 * uv_coords - 1.0  # Normalize to [-1, 1]
+
+    # Backproject texture using `grid_sample`
+    sampled_texture = torch.nn.functional.grid_sample(
+        texture_map_pytorch3d,  # Texture map as a grid
+        uv_coords_normalized.unsqueeze(2),  # UV coordinates as grid
+        mode="bilinear",
+        align_corners=True
+    )  # Output shape: (1, C, N, 1)
+
+    # Update the mesh textures
+    sampled_texture = sampled_texture.squeeze(0).squeeze(-1).permute(1, 0)  # Shape: (N, C)
+
+    # Modify the texture map using the sampled texture
+    updated_texture_map = texture_map.clone()
+    uv_indices = (uv_coords * texture_map.size(0)).long()  # Map UVs to texture map indices
+    updated_texture_map[uv_indices[:, 1], uv_indices[:, 0]] = sampled_texture  # Apply sampled textures to the UV map
+
+    # Create a new TexturesUV object with the updated texture map
     updated_textures = TexturesUV(
-        maps=texture_map_pytorch3d,
+        maps=updated_texture_map.unsqueeze(0).permute(2, 0, 1),  # (H, W, C) -> (1, C, H, W)
         faces_uvs=mesh.textures.faces_uvs_padded(),
         verts_uvs=mesh.textures.verts_uvs_padded()
     )
-
-    # Update the mesh with the new textures
     updated_mesh = mesh.clone()
     updated_mesh.textures = updated_textures
 
