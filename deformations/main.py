@@ -297,27 +297,3 @@ def texture_estimation(input_mesh, output_path, image_path, depth_weight, inpain
             total_textured_loss.backward()
             optimizer.step()
         save_obj(str(output_path / 'mesh_final_texutred.obj'), input_mesh.verts_packed(), input_mesh.faces_packed())
-
-
-
-
-
-
-
-    
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
