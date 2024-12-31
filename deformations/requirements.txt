@@ -1,7 +1,7 @@
-torch>=1.11.0
-torchvision>=0.12.0  # Matches Torch version 1.11.0
-numpy>=1.21.0  # Compatible with PyTorch 1.11
-pytorch3d>=0.7.0  # Compatible with Torch 1.11
+torch>=2.0.0  # Supports CUDA 12.1
+torchvision>=0.15.0  # Matches Torch version 2.0.0
+pytorch3d  # Must be built from source for CUDA 12.1 (see instructions)
+numpy>=1.21.0  # Compatible with PyTorch 2.0.0
 pymeshlab>=2022.2.0
 tqdm>=4.62.0
 diffusers>=0.10.0
@@ -15,7 +15,7 @@ glm>=0.9.9
 trimesh>=3.9.0
 scipy>=1.7.0  # Matches numpy>=1.21.0
 easydict>=1.9
-igl>=2.2.1
+igl>=2.2.1  # May need to be built from source
 boto3>=1.10.50
 appdirs>=1.4.4
 pandas>=1.3.5
