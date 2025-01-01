@@ -1,4 +1,4 @@
-from Jacobian import SourceMesh, PoissonSystem, MeshProcessor
+from Jacobian import SourceMesh
 import torch
 from pytorch3d.structures import Meshes
 from deformations.util import *
@@ -12,9 +12,11 @@ from utilities.camera_batch import CameraBatch
 from diffusers import (
     StableDiffusionControlNetPipeline, 
     ControlNetModel, 
-    UniPCMultistepScheduler,
     StableDiffusionPipeline,
 )
+from PIL import Image
+from salesforce.lavis.models import load_model_and_preprocess
+
 
 
 def update_packed_verts(mesh, new_verts):
@@ -189,7 +191,9 @@ def deformations(input_mesh, target_mesh, epochs, output_path):
 
 
 def texture_estimation(input_mesh, output_path, image_path, depth_weight, inpainting_weight ,device):
-
+    model, vis_processors, _ = load_model_and_preprocess(
+    name="blip_caption", model_type="base_coco", is_eval=True, device=device
+    )
     epochs = 100
     ## SETTING UP THE CONTROLNET PIPELINE
     depth_controlnet = ControlNetModel.from_pretrained("lllyasviel/control_v11p_sd15_depth", torch_dtype=torch.float32).to(device)
@@ -218,9 +222,9 @@ def texture_estimation(input_mesh, output_path, image_path, depth_weight, inpain
 
     ## END SETUP AND RENDERING THE FRONT AND BACK IMAGES
 
-    ##TODO: USE AN IMAGE CAPTIONING MODEL TO GET THE CAPTION OF THE IMAGE
-    image_caption = None
-
+    ##USE AN IMAGE CAPTIONING MODEL TO GET THE CAPTION OF THE IMAGE, USING THE SALEFORCE LAVIS model
+    vis_image = vis_processors["eval"](Image.open(image_path).convert("RGB")).unsqueeze(0).to(device)
+    image_caption = model.generate_caption({"image": vis_image})[0]
     ##END CAPTION MODEL ####
     depth_weight = torch.nn.Parameter(torch.tensor(1.0, device=device, requires_grad=True))
     inpainting_weight = torch.nn.Parameter(torch.tensor(1.0, device=device, requires_grad=True))

@@ -1,5 +1,3 @@
-
-
 import torch
 import glm
 from pytorch3d.renderer import (
