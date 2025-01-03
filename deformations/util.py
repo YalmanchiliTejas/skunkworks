@@ -1,7 +1,7 @@
 import torch
 import glm
 from pytorch3d.renderer import (
-    MeshRenderer,
+    MeshRenderer, 
     MeshRasterizer,
     RasterizationSettings,
     ShaderBase,
@@ -10,15 +10,18 @@ from pytorch3d.renderer import (
     PointLights
 )
 from pytorch3d.structures import Meshes
+from pytorch3d.io import save_obj
 import pymeshlab
 import numpy as np
 
 
 class MaterialMaps:
+    """Class to hold material texture maps"""
     def __init__(self, device):
+        # Initialize texture maps as None
         self.diffuse_map = None
         self.normal_map = None
-        self.specular_map = None
+        self.specular_map = None 
         self.roughness_map = None
         self.device = device
     
@@ -53,19 +56,88 @@ class FlexibleMaterialShader(ShaderBase):
         return blended_image
 
     def forward(self, fragments, meshes, **kwargs):
-        texels = meshes.sample_textures(fragments)  # Sample the texture maps
+        """
+        Shader forward pass with PyTorch3D-based lighting & material usage.
 
-        # Extract material maps
-        diffuse_map = texels[..., :3]  # RGB diffuse values
-        alpha = texels[..., 3:4] if texels.shape[-1] > 3 else torch.ones_like(texels[..., :1])  # Alpha channel
+        Args:
+            fragments: Output of rasterization (RasterizationFragments).
+            meshes: The mesh with textures/UV.
+            **kwargs: Potentially includes "cameras", "lights", etc.
+        """
+        cameras = kwargs.get("cameras", self.cameras)
+        lights = kwargs.get("lights", self.lights)
+        material_maps = kwargs.get("materials", self.material_maps)
 
-        # Perform shading (example: simple diffuse shading based on light direction)
-        shaded = diffuse_map  # Here you can integrate lighting calculations
+        # 1) Sample texture (UV-based diffuse) from the mesh
+        texels = meshes.sample_textures(fragments)  # shape: [N, H, W, K, 4] typically
+        diffuse_color = texels[..., :3]
+        alpha = texels[..., 3:4] if texels.shape[-1] > 3 else torch.ones_like(diffuse_color[..., :1])
 
-        # Blend shaded results to produce the final image
-        blended_image = self.blend_images(fragments, shaded, alpha)
+        # 2) Interpolate vertex normals -> per-pixel normals
+        verts_normals = meshes.verts_normals_packed()  # shape: (V, 3)
+        faces = meshes.faces_packed()                  # shape: (F, 3)
+        pixel_faces = fragments.pix_to_face           # shape: (N, H, W, K)
+        bary_coords = fragments.bary_coords           # shape: (N, H, W, K, 3)
 
+        # Gather the vertex normals for each face
+        face_normals = verts_normals[faces]   # shape: (F, 3, 3)
+        # Interpolate
+        pixel_normals = torch.sum(
+            face_normals[pixel_faces] * bary_coords.unsqueeze(-1),
+            dim=-2
+        )  # shape: (N, H, W, 3)
+
+        # Normalize
+        pixel_normals = torch.nn.functional.normalize(pixel_normals, dim=-1)
+
+        # 3) If you want to sample the separate "diffuse_map" from material_maps, do so here
+        # e.g. if material_maps.diffuse_map is a (512, 512, 3) texture, you'd sample it with UVs
+        # the same way PyTorch3D does. For simplicity, let's assume we just multiply them:
+        if material_maps is not None and material_maps.diffuse_map is not None:
+            # shape: (1, 3, 512, 512) if you did something like material_maps.diffuse_map.unsqueeze(0).permute(2, 0, 1)
+            # you'd need to sample from it using 'texels' UV coords or something similar.
+            # For a minimal example, let's just do a naive scaling:
+            diffuse_color = diffuse_color * 0.8  # or some placeholder logic
+
+        # 4) Lighting
+        if lights is not None and cameras is not None:
+            # Basic Lambert + Blinn-Phong
+            # 4a) Light direction
+            light_pos = lights.location  # shape: (batch_size, 3)
+            # Expand to match pixel shape if needed
+            light_dir = light_pos.view(-1, 1, 1, 1, 3) - fragments.world_coordinates  # approximate
+            light_dir = torch.nn.functional.normalize(light_dir, dim=-1)
+
+            # Dot for lambert
+            lambert = (pixel_normals * light_dir).sum(dim=-1).clamp(min=0)
+
+            # 4b) If specular_map is present, sample or use the map:
+            # For minimal example, let's do a Blinn-Phong spec with a fixed shininess:
+            specular_color = 0
+            if material_maps is not None and material_maps.specular_map is not None:
+                # You can do more advanced sampling from the specular map
+                # For now, let's assume you do a simple highlight:
+                view_dir = -fragments.world_coordinates  # e.g. camera at origin
+                view_dir = torch.nn.functional.normalize(view_dir, dim=-1)
+                half_dir = torch.nn.functional.normalize(light_dir + view_dir, dim=-1)
+                spec_angle = (pixel_normals * half_dir).sum(dim=-1).clamp(min=0)
+                specular_color = spec_angle ** 32  # arbitrary shininess
+
+            # Combine
+            # lights.diffuse_color: shape (batch_size, 3)
+            out_rgb = (
+                diffuse_color * lambert.unsqueeze(-1) * lights.diffuse_color.view(-1, 1, 1, 1, 3) +
+                specular_color.unsqueeze(-1) * lights.specular_color.view(-1, 1, 1, 1, 3) +
+                lights.ambient_color.view(-1, 1, 1, 1, 3)
+            )
+        else:
+            # No lighting => just raw diffuse
+            out_rgb = diffuse_color
+
+        # 5) Alpha blend
+        blended_image = self.blend_images(fragments, out_rgb, alpha)
         return blended_image
+        
 
 # Helper functions to create texture maps
 def create_texture_map(size, device):
@@ -77,7 +149,7 @@ def create_normal_map(size, device):
 def create_specular_map(size, device):
     return torch.zeros((size, size, 3)).float().to(device)
 
-def get_mesh(mesh_path, output_path, triangulate_flag, device="cuda"):
+def get_mesh(mesh_path, output_path, triangulate_flag, mesh_name="mesh.obj", device="cuda"):
     ms = pymeshlab.MeshSet()
     ms.load_new_mesh(mesh_path)
 
@@ -87,6 +159,8 @@ def get_mesh(mesh_path, output_path, triangulate_flag, device="cuda"):
 
     if not ms.current_mesh().has_wedge_tex_coord():
         ms.compute_texcoord_parametrization_triangle_trivial_per_wedge(textdim=10000)
+    
+    ms.save_current_mesh(str(output_path /mesh_name))
 
     # Load vertices, faces, and UVs from PyMeshLab
     vertices = torch.tensor(ms.current_mesh().vertex_matrix(), dtype=torch.float32).to(device)
@@ -127,7 +201,7 @@ def get_mesh(mesh_path, output_path, triangulate_flag, device="cuda"):
     )
     return mesh, material_maps
 
-def setup_renderer(image_size, cameras, lights, device):
+def setup_renderer(image_size, cameras, lights, device, material_maps=None):
     raster_settings = RasterizationSettings(
         image_size=image_size,
         blur_radius=0.0,
@@ -142,7 +216,8 @@ def setup_renderer(image_size, cameras, lights, device):
         shader=FlexibleMaterialShader(
             device=device,
             cameras=cameras,
-            lights=lights
+            lights=lights,
+            materials=material_maps
         )
     )
     return renderer
