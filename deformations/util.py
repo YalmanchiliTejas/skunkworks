@@ -41,19 +41,43 @@ class FlexibleMaterialShader(ShaderBase):
     
     def blend_images(self, fragments, shaded, alpha):
         """
-        Perform alpha blending on shaded images.
+        Perform front-to-back alpha compositing of multiple fragments.
 
         Args:
-            fragments: Rasterization fragments.
-            shaded: Shaded colors for each fragment.
-            alpha: Alpha values for transparency blending.
+            fragments: A RasterizationFragments object from PyTorch3D.
+                       - fragments.zbuf: [N, H, W, K] for depth values (K fragments per pixel).
+            shaded: Shaded colors for each fragment. Shape: [N, H, W, K, 3].
+            alpha:  Alpha values for each fragment. Shape: [N, H, W, K].
 
         Returns:
-            blended_image: The final alpha-blended image.
+            blended_image: The final image after front-to-back compositing (N, H, W, 3).
         """
-        alpha = alpha.unsqueeze(-1)  # Ensure alpha has the correct dimensions
-        blended_image = (shaded * alpha).sum(dim=-2)  # Blend along faces-per-pixel
-        return blended_image
+        # -- (A) Sort fragments by ascending depth so we blend front-to-back
+        zbuf, sort_idx = fragments.zbuf.sort(dim=-1)  # [N, H, W, K] sorted by depth
+        # Gather 'shaded' and 'alpha' in sorted order
+        shaded_sorted = torch.gather(
+            shaded,
+            dim=-2,  # gather along the K dimension
+            index=sort_idx.unsqueeze(-1).expand_as(shaded)
+        )  # [N, H, W, K, 3]
+        alpha_sorted = torch.gather(alpha, dim=-1, index=sort_idx)  # [N, H, W, K]
+
+        # -- (B) Front-to-back compositing loop
+        # Start with zero color and zero coverage
+        composite = torch.zeros_like(shaded_sorted[..., 0, :])  # [N, H, W, 3]
+        composite_alpha = torch.zeros_like(alpha_sorted[..., 0]) # [N, H, W]
+
+        K = shaded_sorted.shape[-2]
+        for k in range(K):
+            color_k = shaded_sorted[..., k, :]    # [N, H, W, 3]
+            alpha_k = alpha_sorted[..., k]        # [N, H, W]
+            one_minus_ca = (1.0 - composite_alpha)
+
+            # standard "over" operator
+            composite = composite + color_k * alpha_k.unsqueeze(-1) * one_minus_ca.unsqueeze(-1)
+            composite_alpha = composite_alpha + alpha_k * one_minus_ca
+
+        return composite  # shape: (N, H, W, 3)
 
     def forward(self, fragments, meshes, **kwargs):
         """
