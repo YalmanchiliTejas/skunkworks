@@ -1,5 +1,7 @@
-from Jacobian import SourceMesh, PoissonSystem, MeshProcessor
+from Jacobian import SourceMesh
 import torch
+import pickle
+import os
 from pytorch3d.structures import Meshes
 from deformations.util import *
 from fashion_clip import FashionCLIP
@@ -12,9 +14,11 @@ from utilities.camera_batch import CameraBatch
 from diffusers import (
     StableDiffusionControlNetPipeline, 
     ControlNetModel, 
-    UniPCMultistepScheduler,
     StableDiffusionPipeline,
 )
+from PIL import Image
+from salesforce.lavis.models import load_model_and_preprocess
+
 
 
 def update_packed_verts(mesh, new_verts):
@@ -43,12 +47,15 @@ def sde_edit(texture, image_caption, device):
     sde_edit = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5").to(device)
 
     return sde_edit(prompt=image_caption, image=texture, strength=0.5,num_inference_steps=50, guidance_scale=7.5).images[0]
-def deformations(input_mesh, target_mesh, epochs, output_path):
-    lr = 0.0025
-    clip_weight = 2.5
-    delta_clip_weight = 5
-    regularize_jacobians_weight = 0.15
-    consistency_loss_weight = 0.1
+def deformations(input_mesh, target_mesh, epochs, output_path,  model_weights, checkpoint_path, model_pickle_path):
+    lr = 0.0025 ##Hyper-parameter1
+    clip_weight =   model_weights.get("clip_weight", 2.5) #2.5
+    delta_clip_weight = model_weights.get("delta_clip_weight", 5)#5
+    regularize_jacobians_weight = model_weights.get("regularize_jacobians_weight", 0.15)#0.15
+    consistency_loss_weight = model_weights.get("consistency_loss_weight", 0.1)#0.1
+    print(f"Using weights: CLIP={clip_weight}, Delta CLIP={delta_clip_weight}, "
+          f"Regularize Jacobians={regularize_jacobians_weight}, Consistency Loss={consistency_loss_weight}")
+    ## OTHER HYPERPARAMETERS
     batch_size = 24
     consistency_clip_model = 'ViT-B/32'
     consistency_vit_stride = 8
@@ -66,21 +73,25 @@ def deformations(input_mesh, target_mesh, epochs, output_path):
         batch_size,
         rand_solid=True
     )
+    #END HYPERPARAMETERS
     
-   
+    log_file = os.path.join(output_path, "deformation_training_log.txt")
+    checkpoint = load_checkpoint(checkpoint_path, device)
+
+
+    #weights_file = os.path.join(output_path, "deformation_weights.pth")
+    with open(log_file, "w") as log:
+        log.write("Epoch\tLoss\tCLIP_Loss\tChamfer_Distance\n")
     cams = torch.utils.data.DataLoader(cams_data, batch_size, num_workers=0, pin_memory=True)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     fe = CLIPVisualEncoder(consistency_clip_model, consistency_vit_stride, device)
-    input_mesh_loaded = get_mesh(input_mesh, "./input_mesh", False, False, 'input_mesh.obj')
-    target_mesh_loaded = get_mesh(target_mesh, "./target_mesh", False, False, 'target_mesh.obj')
+    input_mesh_loaded, input_mesh_material_maps = get_mesh(input_mesh, "./input_mesh",False, 'input_mesh.obj')
+    target_mesh_loaded, target_mesh_material_maps = get_mesh(target_mesh, "./target_mesh", True, 'target_mesh.obj')
 
-    ground_truth = SourceMesh.SourceMesh(0, "./source_mesh", {}, 1, ttype=torch.float32, 
+    ground_truth = SourceMesh.SourceMesh(0, "./input_mesh", {}, 1, ttype=torch.float32, 
                                          use_wks=False, random_centering=False, cpuonly=False)
     ground_truth.load()
     ground_truth.to(device)
-
-    
-
     fclip = FashionCLIP('fashion-clip')
     clip_mean = torch.tensor([0.48154660, 0.45782750, 0.40821073], device=device)
     clip_std = torch.tensor([0.26862954, 0.26130258, 0.27577711], device=device)
@@ -93,9 +104,23 @@ def deformations(input_mesh, target_mesh, epochs, output_path):
     optimizer = torch.optim.Adam([ground_truth_jacobians], lr=lr)
 
     video = Video(output_path)
+    start_epoch = 0
+    if checkpoint:
+        start_epoch = checkpoint["epoch"] + 1
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        ground_truth_jacobians = checkpoint["ground_truth_jacobians"]
+        for k , v in checkpoint["model_weights"].items():
+            model_weights[k] = v
+
+        print(f"Resuming training from epoch {start_epoch}.")
+    else:
+        model_weights["clip_weight"] = clip_weight
+        model_weights["delta_clip_weight"] = delta_clip_weight
+        model_weights["regularize_jacobians_weight"] = regularize_jacobians_weight
+        model_weights["consistency_loss_weight"] = consistency_loss_weight
     
 
-    training_loop = tqdm(range(epochs), leave=False)
+    training_loop = tqdm(range(start_epoch, epochs), leave=False)
     for t in training_loop:
 
         camera_params = next(iter(cams))
@@ -169,28 +194,42 @@ def deformations(input_mesh, target_mesh, epochs, output_path):
         total_loss += (clip_weight * clip_loss + delta_clip_weight * l1_loss +
                        regularize_jacobians_weight * jacobian_reg_loss +
                        chamfer_dist + edge_loss + normal_loss + laplacian_loss + consistency_loss + triangle_area_regularization)
+        
 
         optimizer.zero_grad()
         total_loss.backward()
         optimizer.step()
+       
 
         training_loop.set_description(
             f"Loss: {total_loss.item():.4f}, CLIP: {clip_loss.item():.4f}, Chamfer: {chamfer_dist.item():.4f}")
 
-        if t % 10 == 0:
+        if t % 100 == 0:
             frame = input_rendered_image.permute(0, 2, 3, 1).cpu().numpy()[0]
             video.add_frame(frame)
+        if t % 100 == 0 or (t + 1) == epochs:
+            
+            state = {
+                "epoch": t,
+                "ground_truth_jacobians": ground_truth.vertices_from_jacobians(input_mesh_loaded.verts_packed().unsqueeze(0)),
+                "optimizer": optimizer.state_dict(),
+                "model_weights": model_weights
+            }
+            save_checkpoint(state, checkpoint_path)
 
     video.close()
 
     save_obj(str(output_path / 'mesh_final.obj'), input_mesh_loaded.verts_packed(), input_mesh_loaded.faces_packed())
+    save_model_pickle(model_weights, model_pickle_path)
 
     return
 
 
-def texture_estimation(input_mesh, output_path, image_path, depth_weight, inpainting_weight ,device):
-
-    epochs = 100
+def texture_estimation(input_mesh, output_path, image_path, model_weights=None, textured_epochs=0, checkpoint_path="", model_pickle_path="",device="cuda"):
+    model, vis_processors, _ = load_model_and_preprocess(
+    name="blip_caption", model_type="base_coco", is_eval=True, device=device
+    )
+    
     ## SETTING UP THE CONTROLNET PIPELINE
     depth_controlnet = ControlNetModel.from_pretrained("lllyasviel/control_v11p_sd15_depth", torch_dtype=torch.float32).to(device)
     inpainting_controlnet = ControlNetModel.from_pretrained("lllyasviel/control_v11p_sd15_inpainting", torch_dtype=torch.float32).to(device)
@@ -218,9 +257,9 @@ def texture_estimation(input_mesh, output_path, image_path, depth_weight, inpain
 
     ## END SETUP AND RENDERING THE FRONT AND BACK IMAGES
 
-    ##TODO: USE AN IMAGE CAPTIONING MODEL TO GET THE CAPTION OF THE IMAGE
-    image_caption = None
-
+    ##USE AN IMAGE CAPTIONING MODEL TO GET THE CAPTION OF THE IMAGE, USING THE SALEFORCE LAVIS model
+    vis_image = vis_processors["eval"](Image.open(image_path).convert("RGB")).unsqueeze(0).to(device)
+    image_caption = model.generate_caption({"image": vis_image})[0]
     ##END CAPTION MODEL ####
     depth_weight = torch.nn.Parameter(torch.tensor(1.0, device=device, requires_grad=True))
     inpainting_weight = torch.nn.Parameter(torch.tensor(1.0, device=device, requires_grad=True))
@@ -228,7 +267,25 @@ def texture_estimation(input_mesh, output_path, image_path, depth_weight, inpain
     # Optimizer for the weights
     optimizer = torch.optim.Adam([depth_weight, inpainting_weight], lr=0.0025)
 
-    for epoch in range(epochs):
+    if not model_weights:
+        model_weights = {}
+    depth_weight = model_weights.get("depth_weight", depth_weight)
+    inpainting_weight = model_weights.get("inpainting_weight", inpainting_weight)
+
+    checkpoint_file = load_checkpoint(checkpoint_path, device)
+    start_epoch = 0
+    if checkpoint_path:
+        start_epoch = checkpoint_file["epoch"] + 1
+        optimizer.load_state_dict(checkpoint_file["optimizer"])
+        for k , v in checkpoint_file["model_weights"].items():
+            model_weights[k] = v
+        print(f"Resuming training from epoch {start_epoch}.")
+    else:
+        model_weights["depth_weight"] = depth_weight
+        model_weights["inpainting_weight"] = inpainting_weight
+    training_loop = tqdm(range(start_epoch, textured_epochs), leave=False)
+
+    for epoch in training_loop:
         optimizer.zero_grad()
         front_texture = pipeline(
             prompt=image_caption,
@@ -296,4 +353,78 @@ def texture_estimation(input_mesh, output_path, image_path, depth_weight, inpain
             print(f"The total textured loss, is: inpainting: {inpainting_loss.item()}, depth: {depth_loss.item()} and the total textured_loss: {total_textured_loss.item()}")
             total_textured_loss.backward()
             optimizer.step()
+            if epoch % 100 == 0:
+                state = {
+                    "epoch": epoch,
+                    "optimizer": optimizer.state_dict(),
+                    "model_weights": model_weights
+                }
+                save_checkpoint(state, checkpoint_path)
+
         save_obj(str(output_path / 'mesh_final_texutred.obj'), input_mesh.verts_packed(), input_mesh.faces_packed())
+        save_model_pickle(model_weights, model_pickle_path)
+
+def save_checkpoint(state, file):
+    """Saves a checkpoint to the specified file."""
+    torch.save(state, file)
+
+
+def load_checkpoint(filename, device):
+    """Loads a checkpoint from the specified file."""
+    if os.path.isfile(filename):
+        print(f"Loading checkpoint '{filename}'")
+        checkpoint = torch.load(filename, map_location=device)
+        return checkpoint
+    else:
+        print(f"No checkpoint found at '{filename}'")
+        return None
+
+
+def save_model_pickle(model, filename):
+    """Saves the model to a pickle file."""
+    with open(filename, 'wb') as f:
+        pickle.dump(model, f)
+
+
+def load_model_pickle(filename):
+    """Loads the model from a pickle file."""
+    with open(filename, 'rb') as f:
+        model = pickle.load(f)
+    return model
+
+
+def main(deformation):
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # Paths for input, output, and checkpoints
+    input_mesh_path = "input_mesh.obj"
+    target_mesh_path = "target_mesh.obj"
+    image_path = "image.jpg"
+    output_path = "./output"
+    checkpoint_file = os.path.join(output_path, "deformation_checkpoint.pth.tar") if deformation else os.path.join(output_path, "texture_checkpoint.pth.tar")
+    pickle_file_path = os.path.join(output_path, "deformation_model.pkl") if deformation else os.path.join(output_path, "texture_model.pkl")
+    
+    os.makedirs(output_path, exist_ok=True)
+    # Train the deformation model
+    deformation_epochs = 100
+
+    if deformation:
+
+        print("Starting deformation training...")
+        deformation_epochs = 100
+        model_weights = load_model_pickle(pickle_file_path)
+        deformations(input_mesh_path, target_mesh_path, deformation_epochs,output_path, model_weights, checkpoint_file, pickle_file_path)
+        print("Done training")
+    
+    else:
+    # Train the texture estimation model
+    
+        print("Starting texture estimation training...")
+        texture_epochs = 100
+        model_weights = load_model_pickle(pickle_file_path)
+        texture_estimation(input_mesh_path, output_path, image_path,model_weights, texture_epochs,checkpoint_file,pickle_file_path,device=device)
+
+        # Save the model as a pickle file periodically or at the end of training
+    print("Training completed and model saved.")
+
+
