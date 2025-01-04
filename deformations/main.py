@@ -18,6 +18,7 @@ from diffusers import (
 )
 from PIL import Image
 from salesforce.lavis.models import load_model_and_preprocess
+import argparse
 
 
 
@@ -428,3 +429,14 @@ def main(deformation):
     print("Training completed and model saved.")
 
 
+if __name__ == "__main__":
+    
+    parser = argparse.ArgumentParser(description="Deformation and Texture Estimation")
+    parser.add_argument("--d", action="store_true", help="Train the deformation model", default=True)
+
+    args = parser.parse_args()
+    if args.d:
+        print("Training the deformation model...")
+    else:
+        print("Training the texture estimation model...")
+    main(args.d)
