@@ -16,9 +16,9 @@ MESH_KEYWORDS = {
 }
 
 # Base mesh paths
-BASE_MESH_DIR = "meshes"  # Directory containing base meshes
-OUTPUT_DIR = "prepared_dataset"  # Directory to save processed data
-DATASET_DIR = "clothing_dataset"  # Directory containing garment images
+BASE_MESH_DIR = "./base_meshes"  # Directory containing base meshes
+OUTPUT_DIR = "./prepared_dataset"  # Directory to save processed data
+DATASET_DIR = "./cloth_images"  # Directory containing garment images
 
 # Ensure the output directory exists
 os.makedirs(OUTPUT_DIR, exist_ok=True)
