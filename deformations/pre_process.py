@@ -3,7 +3,7 @@ import json
 import shutil
 import torch
 from PIL import Image
-from salesforce.lavis.models import load_model_and_preprocess
+from lavis.models import load_model_and_preprocess
 
 # Define the mapping of base meshes to garment-related keywords
 MESH_KEYWORDS = {
@@ -32,9 +32,14 @@ model, vis_processors, _ = load_model_and_preprocess(
 
 def generate_caption(image_path):
     """Generate a caption for the given image using Salesforce-LAVIS."""
-    image = Image.open(image_path).convert("RGB")
-    processed_image = vis_processors["eval"](image).unsqueeze(0).to(device)
-    caption = model.generate({"image": processed_image})[0]
+    try:
+         image = Image.open(image_path).convert("RGB")
+         processed_image = vis_processors["eval"](image).unsqueeze(0).to(device)
+         caption = model.generate({"image": processed_image})[0]
+    except:
+
+        return None
+    
     return caption.lower()
 
 
@@ -46,12 +51,25 @@ def match_base_mesh(caption):
     return None  # No match found
 
 
+ 
 def process_clothing_dataset(dataset_dir, output_dir):
-    # Initialize a mapping dictionary to save
-    dataset_mapping = {}
+    # Load existing mapping if available
+    mapping_file = os.path.join(output_dir, "dataset_mapping.json")
+    if os.path.exists(mapping_file):
+        with open(mapping_file, "r") as f:
+            dataset_mapping = json.load(f)
+    else:
+        dataset_mapping = {}
+
+    # Get a set of already processed items
+    processed_items = set(dataset_mapping.keys())
 
     # Iterate over each clothing item in the dataset directory
     for clothing_item in os.listdir(dataset_dir):
+        if clothing_item in processed_items:
+            print(f"Skipping {clothing_item}: Already processed.")
+            continue
+
         item_path = os.path.join(dataset_dir, clothing_item)
 
         # Ensure it's a directory (one folder per clothing item)
@@ -87,12 +105,11 @@ def process_clothing_dataset(dataset_dir, output_dir):
             "base_mesh": os.path.join(item_output_dir, "base_mesh.obj"),
         }
 
-    # Save the mapping to a JSON file for reference
-    mapping_file = os.path.join(output_dir, "dataset_mapping.json")
-    with open(mapping_file, "w") as f:
-        json.dump(dataset_mapping, f, indent=4)
-    print(f"Dataset processed and saved to {output_dir}")
+        # Update the mapping file incrementally
+        with open(mapping_file, "w") as f:
+            json.dump(dataset_mapping, f, indent=4)
 
+    print(f"Dataset processing complete. Mapping saved to {mapping_file}")
 
 # Run the dataset processing
 process_clothing_dataset(DATASET_DIR, OUTPUT_DIR)
