@@ -63,6 +63,9 @@ def process_clothing_dataset(dataset_dir, output_dir):
 
     # Get a set of already processed items
     processed_items = set(dataset_mapping.keys())
+    
+    if len(dataset_mapping) == 0:
+        processed_items = set(os.listdir(output_dir))
 
     # Iterate over each clothing item in the dataset directory
     for clothing_item in os.listdir(dataset_dir):
@@ -73,7 +76,7 @@ def process_clothing_dataset(dataset_dir, output_dir):
         item_path = os.path.join(dataset_dir, clothing_item)
 
         # Ensure it's a directory (one folder per clothing item)
-        if not os.path.isdir(item_path):
+        '''if not os.path.isdir(item_path):
             continue
 
         # Look for an image file in the folder
@@ -82,8 +85,12 @@ def process_clothing_dataset(dataset_dir, output_dir):
             print(f"Skipping {clothing_item}: No image found.")
             continue
 
-        image_path = os.path.join(item_path, image_files[0])  # Use the first image
-        caption = generate_caption(image_path)  # Generate a caption for the image
+        image_path = os.path.join(item_path, image_files[0])  # Use the first image'''
+
+        caption = generate_caption(item_path)  # Generate a caption for the image
+        
+        if not caption:
+            continue
         print(f"Generated caption for {clothing_item}: {caption}")
 
         # Match the caption to a base mesh
