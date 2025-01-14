@@ -4,6 +4,7 @@ import shutil
 import torch
 from PIL import Image
 from lavis.models import load_model_and_preprocess
+import subprocess
 
 # Define the mapping of base meshes to garment-related keywords
 MESH_KEYWORDS = {
@@ -118,5 +119,28 @@ def process_clothing_dataset(dataset_dir, output_dir):
 
     print(f"Dataset processing complete. Mapping saved to {mapping_file}")
 
+def create_target_meshes(directory):
+
+    
+    for cloth in os.listdir(directory):
+         
+       
+        source_image_path = os.path.join(DATASET_DIR, cloth)
+        
+        output_path = os.path.join(directory,cloth)
+        print(output_path, flush=True)
+        print(len(os.listdir(output_path)), flush=True)
+
+        if len(os.listdir(output_path)) > 1:
+            continue
+        process = ["python", "/home/tyalaman/InstantMesh/run.py", " /home/tyalaman/InstantMesh/configs/instant-mesh-large.yaml", source_image_path, "--output_path", output_path,                   " --save_video", "--export_texmap"]
+        print("This is before the command is run", flush=True)
+        result = subprocess.run(process, capture_output=True, text=True)
+        print("This is after the command is run", flush=True)
+        print(result.stdout, flush=True)
+        print(f"Standard error: {result.stderr}", flush=True)        
+        print(f"Return code:{result.returncode}", flush=True)
+
 # Run the dataset processing
-process_clothing_dataset(DATASET_DIR, OUTPUT_DIR)
+#process_clothing_dataset(DATASET_DIR, OUTPUT_DIR)
+create_target_meshes(OUTPUT_DIR)
