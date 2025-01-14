@@ -61,15 +61,23 @@ def process_clothing_dataset(dataset_dir, output_dir):
             dataset_mapping = json.load(f)
     else:
         dataset_mapping = {}
+    # Load existing mapping if available
+    mapping_file = os.path.join(output_dir, "dataset_mapping.json")
+    if os.path.exists(mapping_file):
+        with open(mapping_file, "r") as f:
+            dataset_mapping = json.load(f)
+    else:
+        dataset_mapping = {}
 
     # Get a set of already processed items
     processed_items = set(dataset_mapping.keys())
-    
-    if len(dataset_mapping) == 0:
-        processed_items = set(os.listdir(output_dir))
 
     # Iterate over each clothing item in the dataset directory
     for clothing_item in os.listdir(dataset_dir):
+        if clothing_item in processed_items:
+            print(f"Skipping {clothing_item}: Already processed.")
+            continue
+
         if clothing_item in processed_items:
             print(f"Skipping {clothing_item}: Already processed.")
             continue
@@ -119,6 +127,7 @@ def process_clothing_dataset(dataset_dir, output_dir):
 
     print(f"Dataset processing complete. Mapping saved to {mapping_file}")
 
+
 def create_target_meshes(directory):
 
     
@@ -140,6 +149,7 @@ def create_target_meshes(directory):
         print(result.stdout, flush=True)
         print(f"Standard error: {result.stderr}", flush=True)        
         print(f"Return code:{result.returncode}", flush=True)
+
 
 # Run the dataset processing
 #process_clothing_dataset(DATASET_DIR, OUTPUT_DIR)
