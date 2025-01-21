@@ -1,5 +1,5 @@
 outs:
-    - md5: 371435a33fb9687990e2abdeadbd26ba.dir
-      size: 11620134
+    - md5: acb88b32c4d224d863a46d2a4ec05eb0.dir
+      size: 11832534
       path: prepared_dataset
-      nfiles: 5
+      nfiles: 6
