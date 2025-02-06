@@ -142,7 +142,7 @@ def create_target_meshes(directory):
 
         if len(os.listdir(output_path)) > 1:
             continue
-        process = ["python", "/home/tyalaman/InstantMesh/run.py", " /home/tyalaman/InstantMesh/configs/instant-mesh-large.yaml", source_image_path, "--output_path", output_path,                   " --save_video", "--export_texmap"]
+        process = ["python", "/home/tyalaman/InstantMesh/run.py", "/home/tyalaman/InstantMesh/configs/instant-mesh-large.yaml", source_image_path, "--output_path", output_path,"--save_video", "--export_texmap"]
         print("This is before the command is run", flush=True)
         result = subprocess.run(process, capture_output=True, text=True)
         print("This is after the command is run", flush=True)

@@ -17,7 +17,7 @@ from diffusers import (
     StableDiffusionPipeline,
 )
 from PIL import Image
-from salesforce.lavis.models import load_model_and_preprocess
+from lavis.models import load_model_and_preprocess
 import argparse
 
 
