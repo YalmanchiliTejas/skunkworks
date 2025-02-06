@@ -1,0 +1,16 @@
+gradio==3.41.2
+huggingface-hub
+einops
+omegaconf
+torchmetrics
+webdataset
+accelerate
+tensorboard
+PyMCubes
+trimesh
+rembg
+bitsandbytes
+imageio[ffmpeg]
+xatlas
+plyfile
+git+https://github.com/NVlabs/nvdiffrast/
