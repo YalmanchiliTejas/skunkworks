@@ -25,6 +25,7 @@ def submit_and_monitor_slurm():
     print("Monitorung Job")
     while True:
         result = c.run("squeue -u tyalaman", hide=True)
+        print(result.stdout)
         if  job_id not in result.stdout:
             break
         time.sleep(30)
@@ -42,11 +43,11 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description='Arguments to run the script or upload data')
     parser.add_argument('--upload', type=str, help='Upload the images to DagsHub')
-    parser.add_argument('--run', type=str, help='Run the slurm script')
+    
     args = parser.parse_args()
     if args.upload:
         upload_to_dagshub(args.upload)
-    if args.run:
+    else: 
         submit_and_monitor_slurm()
    
 
