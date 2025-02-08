@@ -78,9 +78,15 @@ def process_batch(ds, image_batch, temp_dir):
 def create_target_meshes():
     # Initialize datasource
     ds = datasources.get(DAGSHUB_REPO, 'skunkworks')
+    print("Datasource initialized", flush=True)
     
+    print(ds['path'], flush=True)
     # Query all images from cloth_images directory
-    query = ds['path'].startswith('cloth_images/')
+    query = ds.query(
+        ds['path'].str.startswith('cloth_images/') &
+        ds['media type'].str.contains('image')
+    )
+    print(query, flush=True)
     all_images = query.all().dataframe.to_dict('records')
     all_images.sort(key=lambda x: x['path'])
     
