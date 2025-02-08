@@ -19,7 +19,7 @@ def submit_and_monitor_slurm():
     # Create a new connection
     c = Connection(host=ClusterHOST, user=ClusterUser, connect_kwargs={'key_filename': ClusterKey})
 
-    result = c.run("cd /home/tyalaman/skunkworks/deformations/slurm_scripts && sbatch pre_process_script.sh", hide=True)
+    result = c.run("source /etc/profile.d/modules.sh && cd /home/tyalaman/skunkworks/deformations/slurm_scripts && sbatch pre_process_script.sh", hide=True)
     print("Job Submitted")
     job_id = result.stdout.split(" ")[-1].strip()
     print("Monitorung Job")
