@@ -4,13 +4,14 @@ import shutil
 import torch
 from PIL import Image
 import subprocess
-from dagshub.data_engine import datasources
-import dagshub.streaming as ds_streaming
+import boto3
+from dagshub import get_repo_bucket_client
 import requests
 
 # Configuration Constants
 BASE_MESH_DIR = "/home/tyalaman/skunkworks/deformations/base_meshes"
-DAGSHUB_REPO = "YalmanchiliTejas/skunkworks"
+DAGSHUB_USER = "YalmanchiliTejas"
+DAGSHUB_REPO = "skunkworks"
 BATCH_SIZE = 10
 TEMP_DIR = "/home/tyalaman/skunkworks/deformations/temp"
 LOG = "/home/tyalaman/skunkworks/deformations/logs/pre_process.log"
@@ -19,11 +20,14 @@ LOG = "/home/tyalaman/skunkworks/deformations/logs/pre_process.log"
 os.environ["NUMBA_DISABLE_CACHING"] = "1"
 os.environ["DAGSHUB_CLIENT_HOST"] = "https://dagshub.com"
 
+# Initialize DagsHub S3 Client
+s3_client = get_repo_bucket_client(f"{DAGSHUB_USER}/{DAGSHUB_REPO}", flavor="boto")
+bucket_name = DAGSHUB_REPO
+
 def write_checkpoint(last_processed):
     """Writes the last processed image path to a log file."""
     with open(LOG, 'w') as f:
         f.write(last_processed)
-    return
 
 def get_last_processed():
     """Reads the last processed image path from the log file."""
@@ -33,29 +37,36 @@ def get_last_processed():
     except FileNotFoundError:
         return None
 
-def process_batch(ds, image_batch, temp_dir):
+def download_file_from_s3(s3_key, local_path):
+    """Download a file from S3 to a local path."""
+    os.makedirs(os.path.dirname(local_path), exist_ok=True)
+    s3_client.download_file(Bucket=bucket_name, Key=s3_key, Filename=local_path)
+
+def upload_file_to_s3(local_path, s3_key):
+    """Upload a local file to S3."""
+    s3_client.upload_file(Filename=local_path, Bucket=bucket_name, Key=s3_key)
+
+def process_batch(image_batch, temp_dir):
     """
     Processes a batch of images:
-    1. Downloads each image from the DagsHub Storage Bucket.
+    1. Downloads each image from DagsHub S3 Storage.
     2. Runs the processing script.
-    3. Uploads processed results back to the dataset.
+    3. Uploads processed results back to S3.
     """
     for cloth in image_batch:
-        image_name = os.path.splitext(os.path.basename(cloth['path']))[0]
-        source_image_path = os.path.join(temp_dir, cloth['path'])
+        image_name = os.path.splitext(os.path.basename(cloth['Key']))[0]
+        source_image_path = os.path.join(temp_dir, cloth['Key'])
         output_path = os.path.join(temp_dir, "output", image_name)
         os.makedirs(output_path, exist_ok=True)
 
         try:
-            # Download image using DagsHub Streaming API
-            with ds_streaming.open(cloth['path'], "rb") as f:
-                with open(source_image_path, "wb") as img_file:
-                    img_file.write(f.read())
+            # Download image from S3 Storage
+            download_file_from_s3(cloth['Key'], source_image_path)
 
             # Skip if the image has already been processed
-            existing_query = ds.query(ds['path'].str.startswith(f"deformations/prepared_dataset/{image_name}"))
-            if len(existing_query.all().dataframe) > 0:
-                print(f"Skipping {cloth['path']} - already processed")
+            existing_files = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=f"deformations/prepared_dataset/{image_name}")
+            if 'Contents' in existing_files:
+                print(f"Skipping {cloth['Key']} - already processed")
                 continue
 
             # Run processing script
@@ -69,18 +80,19 @@ def process_batch(ds, image_batch, temp_dir):
             ]
 
             result = subprocess.run(process, capture_output=True, text=True)
-            print(f"Processed {cloth['path']}: Return code {result.returncode}")
+            print(f"Processed {cloth['Key']}: Return code {result.returncode}")
 
             if result.returncode == 0:
-                # Upload processed files back to DagsHub dataset
+                # Upload processed files back to S3
                 for output_file in os.listdir(output_path):
                     local_file = os.path.join(output_path, output_file)
-                    ds.add_files(local_file, f"deformations/prepared_dataset/{image_name}/{output_file}")
+                    s3_key = f"deformations/prepared_dataset/{image_name}/{output_file}"
+                    upload_file_to_s3(local_file, s3_key)
 
-                write_checkpoint(cloth['path'])
+                write_checkpoint(cloth['Key'])
 
         except Exception as e:
-            print(f"Error processing {cloth['path']}: {str(e)}")
+            print(f"Error processing {cloth['Key']}: {str(e)}")
 
         finally:
             # Cleanup temp files
@@ -90,21 +102,20 @@ def process_batch(ds, image_batch, temp_dir):
                 shutil.rmtree(output_path)
 
 def create_target_meshes():
-    """Main function to fetch images from DagsHub Storage and process them in batches."""
-    # Initialize DagsHub Data Engine
-    ds = datasources.get(DAGSHUB_REPO, "skunkworks")
-    print("Datasource initialized", flush=True)
+    """Main function to fetch images from DagsHub S3 Storage and process them in batches."""
+    print("Connected to DagsHub S3 Storage", flush=True)
 
-    # Retrieve all image paths from the storage bucket
-    all_images = ds.get_files(prefix="cloth_images/", file_types=["image"]).dataframe.to_dict('records')
-    all_images.sort(key=lambda x: x['path'])
+    # Retrieve all image paths from the S3 bucket
+    response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix="cloth_images/")
+    all_images = response.get('Contents', [])
+    all_images.sort(key=lambda x: x['Key'])
 
     last_processed = get_last_processed()
 
     # Find where to resume processing
     if last_processed and last_processed != "All_done":
         try:
-            start_idx = next(i for i, img in enumerate(all_images) if img['path'] == last_processed) + 1
+            start_idx = next(i for i, img in enumerate(all_images) if img['Key'] == last_processed) + 1
             all_images = all_images[start_idx:]
         except (StopIteration, ValueError):
             start_idx = 0
@@ -120,7 +131,7 @@ def create_target_meshes():
     for i in range(0, len(all_images), BATCH_SIZE):
         batch = all_images[i:i + BATCH_SIZE]
         print(f"Processing batch {i // BATCH_SIZE + 1}")
-        process_batch(ds, batch, temp_input_dir)
+        process_batch(batch, temp_input_dir)
 
     print("Processing completed successfully!")
 
