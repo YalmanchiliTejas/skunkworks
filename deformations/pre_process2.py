@@ -97,6 +97,7 @@ def create_target_meshes():
 
     # Retrieve all image paths from the storage bucket
     all_images = ds.get_files(prefix="cloth_images/", file_types=["image"]).dataframe.to_dict('records')
+
     all_images.sort(key=lambda x: x['path'])
 
     last_processed = get_last_processed()
